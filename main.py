@@ -6,6 +6,7 @@ import xgboost as xgb
 import random
 import warnings
 import os
+from waitress import serve  # Production server
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -14,174 +15,181 @@ warnings.filterwarnings('ignore')
 class ReturnShieldAPI:
     def __init__(self):
         self.app = Flask(__name__)
-        CORS(self.app)  # Enable Cross-Origin Resource Sharing
+        CORS(self.app)  # Enable CORS for all routes
         self.model = None
         self.categories = ['Clothing', 'Electronics', 'Home', 'Beauty', 'Shoes']
         self._initialize_model()
         self._setup_routes()
+        self._add_health_check()
 
     def _initialize_model(self):
-        """Initialize with pre-trained model (in production you would load a saved model)"""
+        """Initialize with pre-trained model"""
         print("Initializing model...")
         data = self._generate_training_data()
         self._train_model(data)
 
+    def _add_health_check(self):
+        """Add health check endpoint for Render"""
+
+        @self.app.route('/health')
+        def health_check():
+            return jsonify({"status": "healthy", "service": "ReturnShieldAPI"}), 200
+
     def _generate_training_data(self):
-        """Generate synthetic training data"""
+        """Generate synthetic training data with more realistic patterns"""
         data = []
         for _ in range(1000):
-            item = {
-                'product_category': random.choice(self.categories),
+            category = random.choice(self.categories)
+            base_risk = {
+                'Clothing': 0.35,
+                'Shoes': 0.3,
+                'Electronics': 0.15,
+                'Home': 0.2,
+                'Beauty': 0.1
+            }[category]
+
+            data.append({
+                'product_category': category,
                 'purchase_history': np.random.poisson(15),
                 'return_history': np.random.beta(2, 5),
                 'price': np.random.uniform(10, 200),
-                'return_risk': self._calculate_return_risk()
-            }
-            data.append(item)
+                'return_risk': min(max(base_risk + np.random.normal(0, 0.1), 0.05), 0.95)
+            })
         return pd.DataFrame(data)
 
-    def _calculate_return_risk(self):
-        """Calculate synthetic return risk"""
-        return np.random.uniform(0.05, 0.95)
-
     def _train_model(self, data):
-        """Train the risk prediction model"""
+        """Train the risk prediction model with improved parameters"""
         data = pd.get_dummies(data, columns=['product_category'])
         features = ['purchase_history', 'return_history', 'price'] + \
                    [col for col in data.columns if col.startswith('product_category_')]
         X = data[features]
-        y = (data['return_risk'] > 0.7).astype(int)  # 70% threshold for high risk
+        y = (data['return_risk'] > 0.7).astype(int)
 
         self.model = xgb.XGBClassifier(
             objective='binary:logistic',
-            n_estimators=100,
-            max_depth=5,
-            learning_rate=0.1
+            n_estimators=150,
+            max_depth=6,
+            learning_rate=0.05,
+            subsample=0.8,
+            random_state=42
         )
         self.model.fit(X, y)
 
     def _setup_routes(self):
         @self.app.route('/predict-risk', methods=['POST'])
         def predict_risk():
-            """API endpoint for return risk prediction"""
-            data = request.json
-            required_fields = ['product_category', 'purchase_history', 'return_history', 'price']
-            if not all(field in data for field in required_fields):
-                return jsonify({"error": "Missing required fields"}), 400
+            """Enhanced risk prediction endpoint with better validation"""
+            if not request.is_json:
+                return jsonify({"error": "Request must be JSON"}), 400
 
-            input_data = {
-                'purchase_history': data['purchase_history'],
-                'return_history': data['return_history'],
-                'price': data['price'],
-                f"product_category_{data['product_category']}": 1
-            }
+            data = request.get_json()
+            required_fields = ['product_category', 'purchase_history', 'return_history', 'price']
+
+            if not all(field in data for field in required_fields):
+                missing = [field for field in required_fields if field not in data]
+                return jsonify({"error": f"Missing required fields: {missing}"}), 400
 
             try:
+                input_data = {
+                    'purchase_history': float(data['purchase_history']),
+                    'return_history': float(data['return_history']),
+                    'price': float(data['price']),
+                    f"product_category_{data['product_category']}": 1
+                }
+
                 risk_prob = self._predict_risk(input_data)
                 return jsonify({
                     'risk_level': risk_prob,
-                    'risk_category': 'high' if risk_prob >= 0.7 else 'medium' if risk_prob >= 0.4 else 'low'
+                    'risk_category': self._get_risk_category(risk_prob),
+                    'confidence': round(1 - abs(risk_prob - 0.5) * 2, 2)  # Confidence metric
                 })
+            except ValueError as e:
+                return jsonify({"error": f"Invalid data format: {str(e)}"}), 400
             except Exception as e:
-                return jsonify({"error": str(e)}), 500
-
-        @self.app.route('/sizing-advice', methods=['POST'])
-        def sizing_advice():
-            """API endpoint for sizing advice"""
-            data = request.json
-            if 'product_category' not in data or 'question' not in data:
-                return jsonify({"error": "Missing product_category or question"}), 400
-
-            advice = self._get_sizing_advice(data['product_category'], data['question'])
-            return jsonify({'advice': advice})
+                return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
 
         @self.app.route('/predict-risk-by-name', methods=['POST'])
         def predict_risk_by_name():
-            """API endpoint to predict risk from product name"""
-            data = request.json
+            """Improved product name inference endpoint"""
+            if not request.is_json:
+                return jsonify({"error": "Request must be JSON"}), 400
+
+            data = request.get_json()
             if 'product_name' not in data:
                 return jsonify({"error": "Missing product_name"}), 400
 
             category = self._infer_category_from_name(data['product_name'])
             if not category:
-                return jsonify({"error": "Could not infer category from name"}), 400
-
-            synthetic_data = {
-                'product_category': category,
-                'purchase_history': np.random.poisson(15),
-                'return_history': np.random.beta(2, 5),
-                'price': np.random.uniform(10, 200)
-            }
-
-            input_data = {
-                'purchase_history': synthetic_data['purchase_history'],
-                'return_history': synthetic_data['return_history'],
-                'price': synthetic_data['price'],
-                f"product_category_{synthetic_data['product_category']}": 1
-            }
+                return jsonify({"error": "Could not infer category from product name"}), 400
 
             try:
+                synthetic_data = {
+                    'product_category': category,
+                    'purchase_history': np.random.poisson(15),
+                    'return_history': np.random.beta(2, 5),
+                    'price': np.random.uniform(10, 200)
+                }
+
+                input_data = {
+                    'purchase_history': synthetic_data['purchase_history'],
+                    'return_history': synthetic_data['return_history'],
+                    'price': synthetic_data['price'],
+                    f"product_category_{synthetic_data['product_category']}": 1
+                }
+
                 risk_prob = self._predict_risk(input_data)
                 return jsonify({
                     'product_name': data['product_name'],
                     'inferred_category': category,
                     'risk_level': risk_prob,
-                    'risk_category': 'high' if risk_prob >= 0.7 else 'medium' if risk_prob >= 0.4 else 'low'
+                    'risk_category': self._get_risk_category(risk_prob),
+                    'note': 'Values generated synthetically based on category'
                 })
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
 
+    def _get_risk_category(self, risk_prob):
+        """Categorize risk with clear thresholds"""
+        if risk_prob >= 0.7:
+            return 'high'
+        elif risk_prob >= 0.4:
+            return 'medium'
+        return 'low'
+
     def _infer_category_from_name(self, name):
-        """Infer category based on product name keywords"""
+        """Enhanced category inference with more keywords"""
         name = name.lower()
-        if any(keyword in name for keyword in ['shirt', 't-shirt', 'jeans', 'jacket', 'hoodie']):
-            return 'Clothing'
-        elif any(keyword in name for keyword in ['phone', 'laptop', 'headphones', 'camera']):
-            return 'Electronics'
-        elif any(keyword in name for keyword in ['sofa', 'table', 'lamp', 'mattress']):
-            return 'Home'
-        elif any(keyword in name for keyword in ['cream', 'lotion', 'shampoo', 'perfume']):
-            return 'Beauty'
-        elif any(keyword in name for keyword in ['shoe', 'sneaker', 'boot', 'heel']):
-            return 'Shoes'
+        category_keywords = {
+            'Clothing': ['shirt', 't-shirt', 'jeans', 'jacket', 'hoodie', 'dress', 'pants'],
+            'Electronics': ['phone', 'laptop', 'headphone', 'camera', 'tablet', 'charger'],
+            'Home': ['sofa', 'table', 'lamp', 'mattress', 'chair', 'desk', 'bed'],
+            'Beauty': ['cream', 'lotion', 'shampoo', 'perfume', 'makeup', 'serum'],
+            'Shoes': ['shoe', 'sneaker', 'boot', 'heel', 'sandals', 'loafer']
+        }
+
+        for category, keywords in category_keywords.items():
+            if any(keyword in name for keyword in keywords):
+                return category
         return None
 
     def _predict_risk(self, input_data):
-        """Make a risk prediction"""
+        """Robust prediction handling"""
         input_df = pd.DataFrame([input_data])
         expected_features = self.model.get_booster().feature_names
+
+        # Ensure all expected features exist
         for feat in expected_features:
             if feat not in input_df.columns:
                 input_df[feat] = 0
+
         input_df = input_df[expected_features]
         return float(self.model.predict_proba(input_df)[0][1])
 
-    def _get_sizing_advice(self, product_category, question):
-        """Get sizing advice (mock implementation)"""
-        advice_map = {
-            "Clothing": {
-                "runs small": "This item tends to run small, consider sizing up",
-                "true to size": "Most customers find this true to size",
-                "fit": "The fit is generally regular, check the size chart"
-            },
-            "Shoes": {
-                "size up": "If you have wide feet, consider sizing up",
-                "narrow": "This style runs narrow in the toe box"
-            }
-        }
-
-        product_advice = advice_map.get(product_category, {})
-        for keyword, response in product_advice.items():
-            if keyword in question.lower():
-                return response
-
-        return "Please check the product size chart for accurate measurements"
-
     def run(self):
-        """Run the API server with dynamic port binding for Render"""
+        """Run with production-ready server"""
         port = int(os.environ.get('PORT', 5000))
-        print(f"Running on http://0.0.0.0:{port}")
-        self.app.run(host='0.0.0.0', port=port)
+        print(f"Starting ReturnShield API on port {port}")
+        serve(self.app, host='0.0.0.0', port=port)  # Production server
 
 
 if __name__ == '__main__':
