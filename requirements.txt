@@ -6,3 +6,4 @@ xgboost==1.7.3
 faker==13.3.4
 python-dotenv==0.21.1
 requests==2.28.2
+flask_cors==3.1.1 
