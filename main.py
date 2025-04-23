@@ -1,4 +1,3 @@
-# returnshield_api.py - Pure API version with CORS enabled
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import pandas as pd
@@ -178,19 +177,13 @@ class ReturnShieldAPI:
 
         return "Please check the product size chart for accurate measurements"
 
-    def run(self, host='0.0.0.0', port=5000):
-        """Run the API server"""
-        print(f"Starting ReturnShield API on http://{host}:{port}")
-        print("Available endpoints:")
-        print("POST /predict-risk - Predict return risk")
-        print("POST /predict-risk-by-name - Predict return risk using product name only")
-        print("POST /sizing-advice - Get sizing advice")
-        self.app.run(host=host, port=port)
+    def run(self):
+        """Run the API server with dynamic port binding for Render"""
+        port = int(os.environ.get('PORT', 5000))
+        print(f"Running on http://0.0.0.0:{port}")
+        self.app.run(host='0.0.0.0', port=port)
 
 
-
-
-def run(self):
-    port = int(os.environ.get('PORT', 5000))
-    self.app.run(host='0.0.0.0', port=port)
-
+if __name__ == '__main__':
+    api = ReturnShieldAPI()
+    api.run()
